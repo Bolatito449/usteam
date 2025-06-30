@@ -6,18 +6,8 @@ pipeline {
         NEXUS_PASSWORD = credentials('nexus-password')
         NVD_API_KEY = credentials('nvd-key')
         NEXUS_REPO_URL = 'nexus.bolatitoadegoroye.top'
-        MAVEN_REPO = 'maven-repo'
+        MAVEN_REPO = 'nexus-repo'
         DOCKER_REPO = 'docker-repo'
-        SLACKCHANNEL = 'D08B9AX3V6Y'
-        SLACKCREDENTIALS = credentials('slack')
-    }
-
-    parameters {
-        choice(name: 'action', choices: ['apply', 'destroy'], description: 'Select the action to perform')
-    }
-
-    triggers {
-        pollSCM('* * * * *') // Runs every minute (for demo; consider reducing frequency)
     }
 
     stages {
