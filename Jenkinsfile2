@@ -6,7 +6,7 @@ pipeline {
         NEXUS_PASSWORD = credentials('nexus-password')
         NVD_API_KEY = credentials('nvd-key')
         NEXUS_REPO_URL = 'nexus.bolatitoadegoroye.top'
-        MAVEN_REPO = 'nexus-repo'
+        NEXUS_REPO = 'nexus-repo'
         DOCKER_REPO = 'docker-repo'
     }
 
@@ -86,7 +86,7 @@ pipeline {
         stage('Deploy to Stage') {
             steps {
                 sshagent(['ansible-key']) {
-                    sh 'ssh -t -t ec2-user@10.0.3.24 -o StrictHostKeyChecking=no "ansible-playbook -i /etc/ansible/stage-hosts /etc/ansible/stage-playbook.yml"'
+                    sh 'ssh -t -t ec2-user@10.0.3.220 -o StrictHostKeyChecking=no "ansible-playbook -i /etc/ansible/stage-hosts /etc/ansible/stage-playbook.yml"'
                 }
             }
         }
@@ -116,7 +116,7 @@ pipeline {
         stage('Deploy to Production') {
             steps {
                 sshagent(['ansible-key']) {
-                    sh 'ssh -t -t ec2-user@10.0.3.24 -o StrictHostKeyChecking=no "ansible-playbook -i /etc/ansible/prod-hosts /etc/ansible/prod-playbook.yml"'
+                    sh 'ssh -t -t ec2-user@10.0.3.220 -o StrictHostKeyChecking=no "ansible-playbook -i /etc/ansible/prod-hosts /etc/ansible/prod-playbook.yml"'
                 }
             }
         }
