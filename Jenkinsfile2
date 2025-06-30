@@ -59,7 +59,6 @@ pipeline {
                 sh 'docker build -t $NEXUS_REPO/petclinicapps .'
             }
         }
-        
         stage('Login to Nexus repo') {
             steps {
                 sh 'docker login --username $NEXUS_USER --password $NEXUS_PASSWORD $NEXUS_REPO'
