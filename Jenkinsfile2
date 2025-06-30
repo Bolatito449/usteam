@@ -8,6 +8,15 @@ pipeline {
         NEXUS_REPO_URL = 'nexus.bolatitoadegoroye.top'
         NEXUS_REPO = 'nexus-repo'
         DOCKER_REPO = 'docker-repo'
+        SLACKCHANNEL = 'D08B9AX3V6Y'
+        SLACKCREDENTIALS = credentials('slack')
+    }
+    parameters {
+        choice(name: 'action', choices: ['apply', 'destroy'], description: 'Select the action to perform')
+    }
+
+    triggers {
+        pollSCM('* * * * *') // Runs every minute (for demo; consider reducing frequency)
     }
 
     stages {
