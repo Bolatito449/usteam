@@ -61,7 +61,9 @@ pipeline {
         }
         stage('Login to Nexus repo') {
             steps {
-                 sh 'docker login --username $NEXUS_USER --password $NEXUS_PASSWORD $NEXUS_REPO'
+                 withCredentials([usernamePassword(credentialsId: 'docker-creds', usernameVariable: 'USERNAME', passwordVariable: 'PASSWORD')]) {
+                    sh 'echo "$PASSWORD" | docker login --username $USERNAME --password-stdin nexus.bolatitoadegoroye.top:8085'
+         }
             }
         }
         stage('Push image to Nexus repo') {
