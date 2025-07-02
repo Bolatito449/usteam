@@ -76,7 +76,7 @@ pipeline {
                     string(credentialsId: 'nexus-repo', variable: 'NEXUS_REPO')
                 ]) {
                     sh '''
-                        echo "$NEXUS_PASSWORD" | docker login --username "$NEXUS_USER" --password-stdin nexus.bolatitoadegoroye.top
+                        echo "$NEXUS_PASSWORD" | docker login --username "$NEXUS_USER" --password-stdin nexus.bolatitoadegoroye.top:8085
                     '''
                 }
             }
