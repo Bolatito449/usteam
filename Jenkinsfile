@@ -86,7 +86,7 @@ pipeline {
         }
         stage('check stage website availability') {
             steps {
-                 sh "sleep 200"
+                 sh "sleep 90"
                  sh "curl -s -o /dev/null -w \"%{http_code}\" https://stage.bolatitoadegoroye.top"
                 script {
                     def response = sh(script: "curl -s -o /dev/null -w \"%{http_code}\" https://stage.bolatitoadegoroye", returnStdout: true).trim()
@@ -116,7 +116,7 @@ pipeline {
         }
         stage('check prod website availability') {
             steps {
-                 sh "sleep 200"
+                 sh "sleep 90"
                  sh "curl -s -o /dev/null -w \"%{http_code}\" https://prod.bolatitoadegoroye.top"
                 script {
                     def response = sh(script: "curl -s -o /dev/null -w \"%{http_code}\" https://prod.bolatitoadegoroye.top", returnStdout: true).trim()
