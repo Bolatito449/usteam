@@ -8,8 +8,9 @@ pipeline {
         ANSIBLE_IP = credentials('ansible-ip')
         BASTION_IP = credentials('bastion-ip')
     }
+
     stages {
-        stage('Code analisys stage') {
+        stage('Code analysis stage') {
             steps {
                 withSonarQubeEnv('sonarqube') {
                     sh 'mvn sonar:sonar'
@@ -20,7 +21,7 @@ pipeline {
         stage('Quality gate') {
             steps {
                 timeout(time: 2, unit: 'MINUTES') {
-                    waitForQualityGate abortPipeline: true 
+                    waitForQualityGate abortPipeline: true
                 }
             }
         }
@@ -43,12 +44,10 @@ pipeline {
 
         stage('Push artifacts to nexus-repo') {
             steps {
-                nexusArtifactUploader artifacts: [[
-                    artifactId: 'spring-petclinic',
-                    classifier: '',
-                    file: 'target/spring-petclinic-2.4.2.war',
-                    type: 'war'
-                ]],
+                nexusArtifactUploader artifacts: [[artifactId: 'spring-petclinic',
+                classifier: '',
+                file: 'target/spring-petclinic-2.4.2.war',
+                type: 'war']],
                 credentialsId: 'nexus-cred',
                 groupId: 'Petclinic',
                 nexusUrl: 'nexus.bolatitoadegoroye.top',
@@ -86,26 +85,35 @@ pipeline {
         stage('Deploy to stage') {
             steps {
                 sshagent(['ansible-key']) {
-                    sh '''
-                        # Generate stage inventory
-                        ssh -o StrictHostKeyChecking=no -o ProxyCommand="ssh -W %h:%p -o StrictHostKeyChecking=no ec2-user@${BASTION_IP}" ec2-user@${ANSIBLE_IP} "bash /home/ec2-user/scripts/stage-bashscript.sh"
-
-                        # Deploy with Ansible
-                        ssh -t -t -o StrictHostKeyChecking=no -o ProxyCommand="ssh -W %h:%p -o StrictHostKeyChecking=no ec2-user@${BASTION_IP}" ec2-user@${ANSIBLE_IP} "ansible-playbook -i /etc/ansible/stage_hosts /etc/ansible/deployment.yml"
-                    '''
+                    sh """
+                        ssh -o StrictHostKeyChecking=no -o ProxyCommand="ssh -W %h:%p -o StrictHostKeyChecking=no ec2-user@${BASTION_IP}" ec2-user@${ANSIBLE_IP} '
+                            # Prepare script folder
+                            mkdir -p /home/ec2-user/stage-scripts &&
+                            
+                            # Download stage script from S3
+                            aws s3 cp s3://tito-bucket-pet-adoption/ansible/stage-bashscript.sh /home/ec2-user/stage-scripts/stage-bashscript.sh &&
+                            chmod +x /home/ec2-user/stage-scripts/stage-bashscript.sh &&
+                            
+                            # Run stage script to generate inventory
+                            bash /home/ec2-user/stage-scripts/stage-bashscript.sh &&
+                            
+                            # Run Ansible playbook
+                            ansible-playbook -i /etc/ansible/stage_hosts /etc/ansible/deployment.yml
+                        '
+                    """
                 }
             }
         }
 
-        stage('check stage website availability') {
+        stage('Check stage website availability') {
             steps {
                 sh "sleep 90"
                 script {
                     def response = sh(script: "curl -s -o /dev/null -w \"%{http_code}\" https://stage.bolatitoadegoroye.top", returnStdout: true).trim()
                     if (response == "200") {
-                        slackSend(color: 'good', message: "✅ Stage site is up (HTTP ${response}).", tokenCredentialId: 'slack')
+                        slackSend(color: 'good', message: "The stage petclinic website is up and running with HTTP status code ${response}.", tokenCredentialId: 'slack')
                     } else {
-                        slackSend(color: 'danger', message: "❌ Stage site is down (HTTP ${response}).", tokenCredentialId: 'slack')
+                        slackSend(color: 'danger', message: "The stage petclinic website appears to be down with HTTP status code ${response}.", tokenCredentialId: 'slack')
                     }
                 }
             }
@@ -114,7 +122,7 @@ pipeline {
         stage('Request for Approval') {
             steps {
                 timeout(activity: true, time: 10) {
-                    input message: 'Needs Approval', submitter: 'admin'
+                    input message: 'Needs Approval ', submitter: 'admin'
                 }
             }
         }
@@ -122,26 +130,35 @@ pipeline {
         stage('Deploy to prod') {
             steps {
                 sshagent(['ansible-key']) {
-                    sh '''
-                        # Generate prod inventory
-                        ssh -o StrictHostKeyChecking=no -o ProxyCommand="ssh -W %h:%p -o StrictHostKeyChecking=no ec2-user@${BASTION_IP}" ec2-user@${ANSIBLE_IP} "bash /home/ec2-user/stage-scripts/prod-bashscript.sh"
-
-                        # Deploy with Ansible
-                        ssh -t -t -o StrictHostKeyChecking=no -o ProxyCommand="ssh -W %h:%p -o StrictHostKeyChecking=no ec2-user@${BASTION_IP}" ec2-user@${ANSIBLE_IP} "ansible-playbook -i /etc/ansible/prod_hosts /etc/ansible/deployment.yml"
-                    '''
+                    sh """
+                        ssh -o StrictHostKeyChecking=no -o ProxyCommand="ssh -W %h:%p -o StrictHostKeyChecking=no ec2-user@${BASTION_IP}" ec2-user@${ANSIBLE_IP} '
+                            # Prepare script folder
+                            mkdir -p /home/ec2-user/prod-scripts &&
+                            
+                            # Download prod script from S3
+                            aws s3 cp s3://tito-bucket-pet-adoption/ansible/prod-bashscript.sh /home/ec2-user/prod-scripts/prod-bashscript.sh &&
+                            chmod +x /home/ec2-user/prod-scripts/prod-bashscript.sh &&
+                            
+                            # Run prod script to generate inventory
+                            bash /home/ec2-user/prod-scripts/prod-bashscript.sh &&
+                            
+                            # Run Ansible playbook
+                            ansible-playbook -i /etc/ansible/prod_hosts /etc/ansible/deployment.yml
+                        '
+                    """
                 }
             }
         }
 
-        stage('check prod website availability') {
+        stage('Check prod website availability') {
             steps {
                 sh "sleep 90"
                 script {
                     def response = sh(script: "curl -s -o /dev/null -w \"%{http_code}\" https://prod.bolatitoadegoroye.top", returnStdout: true).trim()
                     if (response == "200") {
-                        slackSend(color: 'good', message: "✅ Prod site is up (HTTP ${response}).", tokenCredentialId: 'slack')
+                        slackSend(color: 'good', message: "The prod petclinic website is up and running with HTTP status code ${response}.", tokenCredentialId: 'slack')
                     } else {
-                        slackSend(color: 'danger', message: "❌ Prod site is down (HTTP ${response}).", tokenCredentialId: 'slack')
+                        slackSend(color: 'danger', message: "The prod petclinic website appears to be down with HTTP status code ${response}.", tokenCredentialId: 'slack')
                     }
                 }
             }
