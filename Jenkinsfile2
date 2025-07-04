@@ -1,18 +1,22 @@
 pipeline {
     agent any
     environment {
+        NEXUS_USER = credentials('nexus-username')
+        NEXUS_PASSWORD = credentials('nexus-password')
+        NEXUS_REPO = credentials('nexus-repo')
         NVD_API_KEY = credentials('nvd-key')
         ANSIBLE_IP = credentials('ansible-ip')
         BASTION_IP = credentials('bastion-ip')
     }
     stages {
-        stage('Code analysis stage') {
+        stage('Code analisys stage') {
             steps {
                 withSonarQubeEnv('sonarqube') {
                     sh 'mvn sonar:sonar'
                 }
             }
         }
+
         stage('Quality gate') {
             steps {
                 timeout(time: 2, unit: 'MINUTES') {
@@ -20,6 +24,7 @@ pipeline {
                 }
             }
         }
+
         stage('Dependency check') {
             steps {
                 withCredentials([string(credentialsId: 'nvd-key', variable: 'NVD_API_KEY')]) {
@@ -29,130 +34,114 @@ pipeline {
                 dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
             }
         }
+
         stage('Build artefacts') {
             steps {
                 sh 'mvn clean package -DskipTests -Dcheckstyle.skip'
             }
         }
-                
+
         stage('Push artifacts to nexus-repo') {
             steps {
-                nexusArtifactUploader(
-                    artifacts: [[
-                        artifactId: 'spring-petclinic',
-                        classifier: '',
-                        file: 'target/spring-petclinic-2.4.2.war',
-                        type: 'war'
-                    ]],
-                    credentialsId: 'nexus-cred',
-                    groupId: 'Petclinic',
-                    nexusUrl: 'nexus.bolatitoadegoroye.top',
-                    nexusVersion: 'nexus3',
-                    protocol: 'https',
-                    repository: 'nexus-repo',
-                    version: '1.0'
-                )
+                nexusArtifactUploader artifacts: [[
+                    artifactId: 'spring-petclinic',
+                    classifier: '',
+                    file: 'target/spring-petclinic-2.4.2.war',
+                    type: 'war'
+                ]],
+                credentialsId: 'nexus-cred',
+                groupId: 'Petclinic',
+                nexusUrl: 'nexus.bolatitoadegoroye.top',
+                nexusVersion: 'nexus3',
+                protocol: 'https',
+                repository: 'nexus-repo',
+                version: '1.0'
             }
         }
 
         stage('Build Docker image') {
             steps {
-                withCredentials([
-                    string(credentialsId: 'nexus-repo', variable: 'NEXUS_REPO')
-                ]) {
-                    sh 'docker build -t ${NEXUS_REPO}/petclinicapps .'
-                }
+                sh 'docker build -t $NEXUS_REPO/petclinicapps .'
             }
         }
-        
+
         stage('Login to Nexus repo') {
             steps {
-                withCredentials([
-                    usernamePassword(
-                        credentialsId: 'nexus-username',
-                        usernameVariable: 'NEXUS_USER',
-                        passwordVariable: 'NEXUS_PASSWORD'
-                    ),
-                    string(credentialsId: 'nexus-repo', variable: 'NEXUS_REPO')
-                ]) {
-                    sh '''
-                        echo "$NEXUS_PASSWORD" | docker login --username "$NEXUS_USER" --password-stdin nexus.bolatitoadegoroye.top:8085
-                    '''
-                }
+                sh 'docker login --username $NEXUS_USER --password $NEXUS_PASSWORD $NEXUS_REPO'
             }
         }
-        
+
         stage('Push image to Nexus repo') {
             steps {
-                withCredentials([
-                    string(credentialsId: 'nexus-repo', variable: 'NEXUS_REPO')
-                ]) {
-                    sh 'docker push ${NEXUS_REPO}/petclinicapps'
-                }
+                sh 'docker push $NEXUS_REPO/petclinicapps'
             }
         }
-        
+
         stage('Trivy image scan') {
             steps {
-                withCredentials([
-                    string(credentialsId: 'nexus-repo', variable: 'NEXUS_REPO')
-                ]) {
-                    sh "trivy image ${NEXUS_REPO}/petclinicapps > trivy.txt"
-                }
+                sh "trivy image $NEXUS_REPO/petclinicapps > trivy.txt"
             }
         }
-        
+
         stage('Deploy to stage') {
             steps {
                 sshagent(['ansible-key']) {
                     sh '''
+                        # Generate stage inventory
+                        ssh -o StrictHostKeyChecking=no -o ProxyCommand="ssh -W %h:%p -o StrictHostKeyChecking=no ec2-user@${BASTION_IP}" ec2-user@${ANSIBLE_IP} "bash /home/ec2-user/stage-scripts/stage-bashscript.sh"
+
+                        # Deploy with Ansible
                         ssh -t -t -o StrictHostKeyChecking=no -o ProxyCommand="ssh -W %h:%p -o StrictHostKeyChecking=no ec2-user@${BASTION_IP}" ec2-user@${ANSIBLE_IP} "ansible-playbook -i /etc/ansible/stage_hosts /etc/ansible/deployment.yml"
                     '''
                 }
             }
         }
-        
-        stage('Check stage website availability') {
+
+        stage('check stage website availability') {
             steps {
-                sh "sleep 200"
+                sh "sleep 90"
                 script {
                     def response = sh(script: "curl -s -o /dev/null -w \"%{http_code}\" https://stage.bolatitoadegoroye.top", returnStdout: true).trim()
                     if (response == "200") {
-                        slackSend(color: 'good', message: "The stage petclinic website is up and running with HTTP status code ${response}.", tokenCredentialId: 'slack-token')
+                        slackSend(color: 'good', message: "✅ Stage site is up (HTTP ${response}).", tokenCredentialId: 'slack')
                     } else {
-                        slackSend(color: 'danger', message: "The stage petclinic website appears to be down with HTTP status code ${response}.", tokenCredentialId: 'slack-token')
+                        slackSend(color: 'danger', message: "❌ Stage site is down (HTTP ${response}).", tokenCredentialId: 'slack')
                     }
                 }
             }
         }
-        
+
         stage('Request for Approval') {
             steps {
-                timeout(time: 10, unit: 'MINUTES') {
-                    input message: 'Approve deployment to production?', submitter: 'admin'
+                timeout(activity: true, time: 10) {
+                    input message: 'Needs Approval', submitter: 'admin'
                 }
             }
         }
-        
+
         stage('Deploy to prod') {
             steps {
                 sshagent(['ansible-key']) {
                     sh '''
+                        # Generate prod inventory
+                        ssh -o StrictHostKeyChecking=no -o ProxyCommand="ssh -W %h:%p -o StrictHostKeyChecking=no ec2-user@${BASTION_IP}" ec2-user@${ANSIBLE_IP} "bash /home/ec2-user/stage-scripts/prod-bashscript.sh"
+
+                        # Deploy with Ansible
                         ssh -t -t -o StrictHostKeyChecking=no -o ProxyCommand="ssh -W %h:%p -o StrictHostKeyChecking=no ec2-user@${BASTION_IP}" ec2-user@${ANSIBLE_IP} "ansible-playbook -i /etc/ansible/prod_hosts /etc/ansible/deployment.yml"
                     '''
                 }
             }
         }
-        
-        stage('Check prod website availability') {
+
+        stage('check prod website availability') {
             steps {
-                sh "sleep 200"
+                sh "sleep 90"
                 script {
                     def response = sh(script: "curl -s -o /dev/null -w \"%{http_code}\" https://prod.bolatitoadegoroye.top", returnStdout: true).trim()
                     if (response == "200") {
-                        slackSend(color: 'good', message: "The prod petclinic website is up and running with HTTP status code ${response}.", tokenCredentialId: 'slack-token')
+                        slackSend(color: 'good', message: "✅ Prod site is up (HTTP ${response}).", tokenCredentialId: 'slack')
                     } else {
-                        slackSend(color: 'danger', message: "The prod petclinic website appears to be down with HTTP status code ${response}.", tokenCredentialId: 'slack-token')
+                        slackSend(color: 'danger', message: "❌ Prod site is down (HTTP ${response}).", tokenCredentialId: 'slack')
                     }
                 }
             }
