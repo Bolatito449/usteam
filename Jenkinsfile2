@@ -29,8 +29,8 @@ pipeline {
         stage('Dependency check') {
             steps {
                 withCredentials([string(credentialsId: 'nvd-key', variable: 'API_KEY')]) {
-                    dependencyCheck additionalArguments: "--scan ./ --disableYarnAudit --disableNodeAudit --nvdApiKey=${API_KEY}",
-                        odcInstallation: 'DP-Check'
+                  dependencyCheck additionalArguments: "--scan ./ --disableYarnAudit --disableNodeAudit --nvdApiKey=${env.API_KEY} --nvdApiDelay=300",
+                    odcInstallation: 'DP-Check'
                 }
                 script {
                     def reportExists = fileExists '**/dependency-check-report.xml'
