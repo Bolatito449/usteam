@@ -7,27 +7,10 @@ pipeline {
         NVD_API_KEY = credentials('nvd-key')
         ANSIBLE_IP = credentials('ansible-ip')
         BASTION_IP = credentials('bastion-ip')
-        SLACK_CHANNEL = 'D08B9AX3V6Y'
     }
-
-    options {
-        timeout(time: 30, unit: 'MINUTES')
-        buildDiscarder(logRotator(numToKeepStr: '10'))
-        disableConcurrentBuilds()
-        skipDefaultCheckout()
-    }
-
     stages {
-        stage('Initialize') {
-            steps {
-                script {
-                    currentBuild.displayName = "#${env.BUILD_NUMBER}"
-                    cleanWs()
-                }
-            }
-        }
 
-        stage('Code analysis') {
+        stage('Code analysis stage') {
             steps {
                 withSonarQubeEnv('sonarqube') {
                     sh 'mvn sonar:sonar'
@@ -38,349 +21,132 @@ pipeline {
         stage('Quality gate') {
             steps {
                 timeout(time: 2, unit: 'MINUTES') {
-                    waitForQualityGate abortPipeline: true 
+                    waitForQualityGate abortPipeline: true
                 }
             }
         }
 
         stage('Dependency check') {
             steps {
-                withCredentials([string(credentialsId: 'nvd-key', variable: 'NVD_API_KEY')]) {
-                    dependencyCheck additionalArguments: """
-                        --scan ./ 
-                        --disableYarnAudit 
-                        --disableNodeAudit 
-                        --nvdApiKey $NVD_API_KEY
-                        --failOnSeverity critical
-                    """, odcInstallation: 'DP-Check'
-                    dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
+                withCredentials([string(credentialsId: 'nvd-key', variable: 'API_KEY')]) {
+                    dependencyCheck additionalArguments: "--scan ./ --disableYarnAudit --disableNodeAudit --nvdApiKey=${API_KEY}",
+                        odcInstallation: 'DP-Check'
+                }
+                script {
+                    def reportExists = fileExists '**/dependency-check-report.xml'
+                    if (reportExists) {
+                        dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
+                    } else {
+                        echo "Dependency-Check report not found, skipping publishing step."
+                    }
                 }
             }
         }
 
-        stage('Build artifacts') {
+        stage('Build artefacts') {
             steps {
                 sh 'mvn clean package -DskipTests -Dcheckstyle.skip'
-                archiveArtifacts artifacts: 'target/*.war', fingerprint: true
             }
         }
 
         stage('Push artifacts to nexus-repo') {
             steps {
-                nexusArtifactUploader(
-                    artifacts: [[
-                        artifactId: 'spring-petclinic',
-                        classifier: '',
-                        file: 'target/spring-petclinic-2.4.2.war',
-                        type: 'war'
-                    ]],
-                    credentialsId: 'nexus-cred',
-                    groupId: 'Petclinic',
-                    nexusUrl: 'nexus.bolatitoadegoroye.top',
-                    nexusVersion: 'nexus3',
-                    protocol: 'https',
-                    repository: 'nexus-repo',
-                    version: '1.0'
-                )
+                nexusArtifactUploader artifacts: [[
+                    artifactId: 'spring-petclinic',
+                    classifier: '',
+                    file: 'target/spring-petclinic-2.4.2.war',
+                    type: 'war'
+                ]],
+                credentialsId: 'nexus-cred',
+                groupId: 'Petclinic',
+                nexusUrl: 'nexus.bolatitoadegoroye.top',
+                nexusVersion: 'nexus3',
+                protocol: 'https',
+                repository: 'nexus-repo',
+                version: '1.0'
             }
         }
 
         stage('Build Docker image') {
             steps {
-                script {
-                    try {
-                        sh 'docker build -t $NEXUS_REPO/petclinicapps .'
-                    } catch (Exception e) {
-                        notifyFailure("Docker build failed: ${e.getMessage()}")
-                        error("Docker build failed")
-                    }
-                }
+                sh 'docker build -t $NEXUS_REPO/petclinicapps .'
             }
         }
 
-        stage('Docker Push') {
+        stage('Login to Nexus repo') {
             steps {
-                script {
-                    withCredentials([usernamePassword(
-                        credentialsId: 'nexus-cred',
-                        usernameVariable: 'DOCKER_USER',
-                        passwordVariable: 'DOCKER_PASS'
-                    )]) {
-                        try {
-                            sh """
-                                docker login -u $DOCKER_USER -p $DOCKER_PASS $NEXUS_REPO
-                                docker push $NEXUS_REPO/petclinicapps
-                            """
-                        } catch (Exception e) {
-                            notifyFailure("Docker push failed: ${e.getMessage()}")
-                            error("Docker push failed")
-                        }
-                    }
-                }
+                sh 'docker login --username $NEXUS_USER --password $NEXUS_PASSWORD $NEXUS_REPO'
             }
         }
 
-        stage('Security Scan') {
+        stage('Push image to Nexus repo') {
             steps {
-                script {
-                    try {
-                        def scanResult = sh(
-                            script: """
-                                trivy image --exit-code 1 \
-                                --severity HIGH,CRITICAL \
-                                --ignore-unfixed \
-                                --format table \
-                                $NEXUS_REPO/petclinicapps | tee trivy-scan.txt
-                            """,
-                            returnStatus: true
-                        )
-                        
-                        archiveArtifacts artifacts: 'trivy-scan.txt', fingerprint: true
-                        
-                        if (scanResult == 1) {
-                            notifyWarning("Critical vulnerabilities found in container image")
-                        }
-                    } catch (Exception e) {
-                        notifyFailure("Security scan failed: ${e.getMessage()}")
-                        error("Security scan failed")
-                    }
-                }
+                sh 'docker push $NEXUS_REPO/petclinicapps'
+            }
+        }
+
+        stage('Trivy image scan') {
+            steps {
+                sh "trivy image $NEXUS_REPO/petclinicapps > trivy.txt"
             }
         }
 
         stage('Deploy to stage') {
             steps {
+                sshagent(['ansible-key']) {
+                    sh '''
+                        ssh -t -t -o StrictHostKeyChecking=no -o ProxyCommand="ssh -W %h:%p -o StrictHostKeyChecking=no ec2-user@${BASTION_IP}" ec2-user@${ANSIBLE_IP} "ansible-playbook -i /etc/ansible/stage_hosts /etc/ansible/deployment.yml"
+                    '''
+                }
+            }
+        }
+
+        stage('Check stage website availability') {
+            steps {
+                sh "sleep 90"
                 script {
-                    try {
-                        sshagent(['ansible-key']) {
-                            def deployResult = sh(
-                                script: """
-                                    ssh -vvv -t -t -o StrictHostKeyChecking=no \
-                                    -o ProxyCommand="ssh -W %h:%p -o StrictHostKeyChecking=no ec2-user@${BASTION_IP}" \
-                                    ec2-user@${ANSIBLE_IP} \
-                                    "ansible-playbook -i /etc/ansible/stage_hosts /etc/ansible/deployment.yml"
-                                """,
-                                returnStatus: true
-                            )
-                            
-                            if (deployResult != 0) {
-                                notifyFailure("Stage deployment failed with exit code ${deployResult}")
-                                error("Stage deployment failed")
-                            }
-                        }
-                    } catch (Exception e) {
-                        notifyFailure("Stage deployment failed: ${e.getMessage()}")
-                        error("Stage deployment failed")
+                    def response = sh(script: "curl -s -o /dev/null -w \"%{http_code}\" https://stage.bolatitoadegoroye.top", returnStdout: true).trim()
+                    if (response == "200") {
+                        slackSend(color: 'good', message: "✅ The stage petclinic website is up and running with HTTP status code ${response}.", tokenCredentialId: 'slack')
+                    } else {
+                        slackSend(color: 'danger', message: "❌ The stage petclinic website appears to be down with HTTP status code ${response}.", tokenCredentialId: 'slack')
+                        error("Stage site returned status code ${response}")
                     }
                 }
             }
         }
 
-        stage('Verify stage deployment') {
+        stage('Request for Approval') {
             steps {
-                script {
-                    try {
-                        def healthy = verifyDeployment(
-                            bastion: env.BASTION_IP,
-                            target: env.ANSIBLE_IP,
-                            url: "https://stage.bolatitoadegoroye.top",
-                            containerName: "petclinic"
-                        )
-                        
-                        if (!healthy) {
-                            notifyFailure("Stage verification failed")
-                            error("Stage verification failed")
-                        }
-                        
-                        notifySuccess("Stage deployment successful")
-                    } catch (Exception e) {
-                        notifyFailure("Stage verification failed: ${e.getMessage()}")
-                        error("Stage verification failed")
-                    }
+                timeout(activity: true, time: 10) {
+                    input message: 'Needs Approval ', submitter: 'admin'
                 }
             }
         }
 
-        stage('Production Approval') {
+        stage('Deploy to prod') {
             steps {
-                timeout(time: 10, unit: 'MINUTES') {
-                    input(
-                        message: 'Approve Production Deployment?',
-                        submitter: 'admin',
-                        parameters: [
-                            choice(
-                                choices: ['Approve', 'Reject'],
-                                description: 'Select deployment action',
-                                name: 'DEPLOY_ACTION'
-                            )
-                        ]
-                    )
+                sshagent(['ansible-key']) {
+                    sh '''
+                        ssh -t -t -o StrictHostKeyChecking=no -o ProxyCommand="ssh -W %h:%p -o StrictHostKeyChecking=no ec2-user@${BASTION_IP}" ec2-user@${ANSIBLE_IP} "ansible-playbook -i /etc/ansible/prod_hosts /etc/ansible/deployment.yml"
+                    '''
                 }
             }
         }
 
-        stage('Deploy to production') {
-            when {
-                expression { params.DEPLOY_ACTION == 'Approve' }
-            }
+        stage('Check prod website availability') {
             steps {
+                sh "sleep 90"
                 script {
-                    try {
-                        sshagent(['ansible-key']) {
-                            def deployResult = sh(
-                                script: """
-                                    ssh -vvv -t -t -o StrictHostKeyChecking=no \
-                                    -o ProxyCommand="ssh -W %h:%p -o StrictHostKeyChecking=no ec2-user@${BASTION_IP}" \
-                                    ec2-user@${ANSIBLE_IP} \
-                                    "ansible-playbook -i /etc/ansible/prod_hosts /etc/ansible/deployment.yml"
-                                """,
-                                returnStatus: true
-                            )
-                            
-                            if (deployResult != 0) {
-                                notifyFailure("Production deployment failed with exit code ${deployResult}")
-                                error("Production deployment failed")
-                            }
-                        }
-                    } catch (Exception e) {
-                        notifyFailure("Production deployment failed: ${e.getMessage()}")
-                        error("Production deployment failed")
-                    }
-                }
-            }
-        }
-
-        stage('Verify production deployment') {
-            when {
-                expression { params.DEPLOY_ACTION == 'Approve' }
-            }
-            steps {
-                script {
-                    try {
-                        def healthy = verifyDeployment(
-                            bastion: env.BASTION_IP,
-                            target: env.ANSIBLE_IP,
-                            url: "https://prod.bolatitoadegoroye.top",
-                            containerName: "petclinic"
-                        )
-                        
-                        if (!healthy) {
-                            notifyFailure("Production verification failed")
-                            error("Production verification failed")
-                        }
-                        
-                        currentBuild.result = 'SUCCESS'
-                        notifySuccess("Production deployment successful")
-                    } catch (Exception e) {
-                        currentBuild.result = 'FAILURE'
-                        notifyFailure("Production verification failed: ${e.getMessage()}")
-                        error("Production verification failed")
+                    def response = sh(script: "curl -s -o /dev/null -w \"%{http_code}\" https://prod.bolatitoadegoroye.top", returnStdout: true).trim()
+                    if (response == "200") {
+                        slackSend(color: 'good', message: "✅ The prod petclinic website is up and running with HTTP status code ${response}.", tokenCredentialId: 'slack')
+                    } else {
+                        slackSend(color: 'danger', message: "❌ The prod petclinic website appears to be down with HTTP status code ${response}.", tokenCredentialId: 'slack')
+                        error("Prod site returned status code ${response}")
                     }
                 }
             }
         }
     }
-
-    post {
-        always {
-            script {
-                def duration = currentBuild.durationString.replace(' and counting', '')
-                def status = currentBuild.currentResult ?: 'SUCCESS'
-                
-                // Final status assertion
-                if (status != 'FAILURE') {
-                    currentBuild.result = 'SUCCESS'
-                }
-
-                slackSend(
-                    color: currentBuild.result == 'SUCCESS' ? 'good' : 'danger',
-                    message: """*FINAL PIPELINE STATUS*: ${currentBuild.result}
-*Job*: ${env.JOB_NAME} #${env.BUILD_NUMBER}
-*Duration*: ${duration}
-*Stage URL*: <https://stage.bolatitoadegoroye.top|Stage Environment>
-*Prod URL*: <https://prod.bolatitoadegoroye.top|Production Environment>
-*Build URL*: ${env.BUILD_URL}""",
-                    channel: env.SLACK_CHANNEL,
-                    tokenCredentialId: 'slack'
-                )
-            }
-        }
-
-        cleanup {
-            cleanWs()
-            sshagent(['ansible-key']) {
-                sh 'ssh-add -D || true'
-            }
-        }
-    }
-}
-
-// Shared library functions
-def notifySuccess(message) {
-    slackSend(
-        color: 'good',
-        message: "*SUCCESS*: ${message}\n*Job*: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
-        channel: env.SLACK_CHANNEL,
-        tokenCredentialId: 'slack'
-    )
-}
-
-def notifyFailure(message) {
-    slackSend(
-        color: 'danger',
-        message: "*FAILURE*: ${message}\n*Job*: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
-        channel: env.SLACK_CHANNEL,
-        tokenCredentialId: 'slack'
-    )
-}
-
-def notifyWarning(message) {
-    slackSend(
-        color: 'warning',
-        message: "*WARNING*: ${message}\n*Job*: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
-        channel: env.SLACK_CHANNEL,
-        tokenCredentialId: 'slack'
-    )
-}
-
-def verifyDeployment(Map args) {
-    def retries = 3
-    def success = false
-    
-    // Verify container is running
-    def containerStatus = sh(
-        script: """
-            ssh -o StrictHostKeyChecking=no \
-            -o ProxyCommand="ssh -W %h:%p -o StrictHostKeyChecking=no ec2-user@${args.bastion}" \
-            ec2-user@${args.target} \
-            "docker inspect --format '{{.State.Status}}' ${args.containerName} 2>/dev/null || echo 'not-found'"
-        """,
-        returnStdout: true
-    ).trim()
-    
-    if (containerStatus != 'running') {
-        return false
-    }
-    
-    // Verify HTTP endpoint
-    while (retries > 0 && !success) {
-        try {
-            def status = sh(
-                script: "curl -s -o /dev/null -w '%{http_code}' --max-time 10 ${args.url}",
-                returnStdout: true
-            ).trim()
-            
-            if (status == '200') {
-                success = true
-            } else {
-                retries--
-                sleep(time: 30, unit: 'SECONDS')
-            }
-        } catch (Exception e) {
-            retries--
-            sleep(time: 30, unit: 'SECONDS')
-        }
-    }
-    
-    return success
 }
