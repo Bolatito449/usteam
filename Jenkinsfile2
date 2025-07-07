@@ -21,13 +21,13 @@ pipeline {
         stage('Initialize') {
             steps {
                 script {
-                    currentBuild.displayName = "#${env.BUILD_NUMBER} - ${env.GIT_BRANCH ?: 'main'}"
+                    currentBuild.displayName = "#${env.BUILD_NUMBER}"
                     cleanWs()
                 }
             }
         }
 
-        stage('Code Analysis') {
+        stage('Code analysis') {
             steps {
                 withSonarQubeEnv('sonarqube') {
                     sh 'mvn sonar:sonar'
@@ -35,15 +35,15 @@ pipeline {
             }
         }
 
-        stage('Quality Gate') {
+        stage('Quality gate') {
             steps {
                 timeout(time: 2, unit: 'MINUTES') {
-                    waitForQualityGate abortPipeline: true
+                    waitForQualityGate abortPipeline: true 
                 }
             }
         }
 
-        stage('Security Scan') {
+        stage('Dependency check') {
             steps {
                 withCredentials([string(credentialsId: 'nvd-key', variable: 'NVD_API_KEY')]) {
                     dependencyCheck additionalArguments: """
@@ -58,14 +58,14 @@ pipeline {
             }
         }
 
-        stage('Build') {
+        stage('Build artifacts') {
             steps {
                 sh 'mvn clean package -DskipTests -Dcheckstyle.skip'
                 archiveArtifacts artifacts: 'target/*.war', fingerprint: true
             }
         }
 
-        stage('Nexus Upload') {
+        stage('Push artifacts to nexus-repo') {
             steps {
                 nexusArtifactUploader(
                     artifacts: [[
@@ -85,14 +85,14 @@ pipeline {
             }
         }
 
-        stage('Docker Build') {
+        stage('Build Docker image') {
             steps {
                 script {
                     try {
                         sh 'docker build -t $NEXUS_REPO/petclinicapps .'
                     } catch (Exception e) {
-                        notifyFailure("Docker build failed")
-                        error("Docker build failed: ${e.getMessage()}")
+                        notifyFailure("Docker build failed: ${e.getMessage()}")
+                        error("Docker build failed")
                     }
                 }
             }
@@ -112,8 +112,8 @@ pipeline {
                                 docker push $NEXUS_REPO/petclinicapps
                             """
                         } catch (Exception e) {
-                            notifyFailure("Docker push failed")
-                            error("Docker push failed: ${e.getMessage()}")
+                            notifyFailure("Docker push failed: ${e.getMessage()}")
+                            error("Docker push failed")
                         }
                     }
                 }
@@ -135,19 +135,20 @@ pipeline {
                             returnStatus: true
                         )
                         
-                        if (scanResult == 1) {
-                            notifyWarning("Critical vulnerabilities found")
-                        }
                         archiveArtifacts artifacts: 'trivy-scan.txt', fingerprint: true
+                        
+                        if (scanResult == 1) {
+                            notifyWarning("Critical vulnerabilities found in container image")
+                        }
                     } catch (Exception e) {
-                        notifyFailure("Security scan failed")
-                        error("Security scan failed: ${e.getMessage()}")
+                        notifyFailure("Security scan failed: ${e.getMessage()}")
+                        error("Security scan failed")
                     }
                 }
             }
         }
 
-        stage('Stage Deployment') {
+        stage('Deploy to stage') {
             steps {
                 script {
                     try {
@@ -163,19 +164,19 @@ pipeline {
                             )
                             
                             if (deployResult != 0) {
-                                notifyFailure("Stage deployment failed")
-                                error("Stage deployment failed with exit code ${deployResult}")
+                                notifyFailure("Stage deployment failed with exit code ${deployResult}")
+                                error("Stage deployment failed")
                             }
                         }
                     } catch (Exception e) {
-                        notifyFailure("Stage deployment failed")
-                        error("Stage deployment failed: ${e.getMessage()}")
+                        notifyFailure("Stage deployment failed: ${e.getMessage()}")
+                        error("Stage deployment failed")
                     }
                 }
             }
         }
 
-        stage('Stage Verification') {
+        stage('Verify stage deployment') {
             steps {
                 script {
                     try {
@@ -193,8 +194,8 @@ pipeline {
                         
                         notifySuccess("Stage deployment successful")
                     } catch (Exception e) {
-                        notifyFailure("Stage verification failed")
-                        error("Stage verification failed: ${e.getMessage()}")
+                        notifyFailure("Stage verification failed: ${e.getMessage()}")
+                        error("Stage verification failed")
                     }
                 }
             }
@@ -218,7 +219,7 @@ pipeline {
             }
         }
 
-        stage('Production Deployment') {
+        stage('Deploy to production') {
             when {
                 expression { params.DEPLOY_ACTION == 'Approve' }
             }
@@ -237,19 +238,19 @@ pipeline {
                             )
                             
                             if (deployResult != 0) {
-                                notifyFailure("Production deployment failed")
-                                error("Production deployment failed with exit code ${deployResult}")
+                                notifyFailure("Production deployment failed with exit code ${deployResult}")
+                                error("Production deployment failed")
                             }
                         }
                     } catch (Exception e) {
-                        notifyFailure("Production deployment failed")
-                        error("Production deployment failed: ${e.getMessage()}")
+                        notifyFailure("Production deployment failed: ${e.getMessage()}")
+                        error("Production deployment failed")
                     }
                 }
             }
         }
 
-        stage('Production Verification') {
+        stage('Verify production deployment') {
             when {
                 expression { params.DEPLOY_ACTION == 'Approve' }
             }
@@ -272,8 +273,8 @@ pipeline {
                         notifySuccess("Production deployment successful")
                     } catch (Exception e) {
                         currentBuild.result = 'FAILURE'
-                        notifyFailure("Production verification failed")
-                        error("Production verification failed: ${e.getMessage()}")
+                        notifyFailure("Production verification failed: ${e.getMessage()}")
+                        error("Production verification failed")
                     }
                 }
             }
@@ -287,7 +288,7 @@ pipeline {
                 def status = currentBuild.currentResult ?: 'SUCCESS'
                 
                 // Final status assertion
-                if (status != 'FAILURE' && manager.build.result.isBetterOrEqualTo(hudson.model.Result.SUCCESS)) {
+                if (status != 'FAILURE') {
                     currentBuild.result = 'SUCCESS'
                 }
 
