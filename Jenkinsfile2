@@ -9,8 +9,7 @@ pipeline {
         BASTION_IP = credentials('bastion-ip')
     }
     stages {
-
-        stage('Code analysis stage') {
+        stage('Code analisys stage') {
             steps {
                 withSonarQubeEnv('sonarqube') {
                     sh 'mvn sonar:sonar'
@@ -21,23 +20,24 @@ pipeline {
         stage('Quality gate') {
             steps {
                 timeout(time: 2, unit: 'MINUTES') {
-                    waitForQualityGate abortPipeline: true
+                    waitForQualityGate abortPipeline: true 
                 }
             }
         }
 
         stage('Dependency check') {
             steps {
-                withCredentials([string(credentialsId: 'nvd-key', variable: 'API_KEY')]) {
-                  dependencyCheck additionalArguments: "--scan ./ --disableYarnAudit --disableNodeAudit --nvdApiKey=${env.API_KEY} --nvdApiDelay=300",
-                    odcInstallation: 'DP-Check'
-                }
-                script {
-                    def reportExists = fileExists '**/dependency-check-report.xml'
-                    if (reportExists) {
-                        dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
-                    } else {
-                        echo "Dependency-Check report not found, skipping publishing step."
+                catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                    withCredentials([string(credentialsId: 'nvd-key', variable: 'API_KEY')]) {
+                        dependencyCheck additionalArguments: "--scan ./ --disableYarnAudit --disableNodeAudit --nvdApiKey=${env.API_KEY} --nvdApiDelay=3000",
+                            odcInstallation: 'DP-Check'
+                    }
+                    script {
+                        if (fileExists('dependency-check-report.xml')) {
+                            dependencyCheckPublisher pattern: 'dependency-check-report.xml'
+                        } else {
+                            echo "Dependency-Check report not found, skipping publishing step."
+                        }
                     }
                 }
             }
@@ -101,7 +101,7 @@ pipeline {
             }
         }
 
-        stage('Check stage website availability') {
+        stage('check stage website availability') {
             steps {
                 sh "sleep 90"
                 script {
@@ -134,7 +134,7 @@ pipeline {
             }
         }
 
-        stage('Check prod website availability') {
+        stage('check prod website availability') {
             steps {
                 sh "sleep 90"
                 script {
